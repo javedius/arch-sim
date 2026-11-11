@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "shot": "node scripts/screenshot.mjs"
+    "shot": "node scripts/screenshot.mjs",
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.3",

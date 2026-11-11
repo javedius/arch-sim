@@ -3,8 +3,8 @@ import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 
 const port = 4179
-const server = spawn('node', ['node_modules/vite/bin/vite.js', 'preview', '--port', String(port), '--strictPort'], { stdio: 'ignore' })
-await new Promise((r) => setTimeout(r, 2500))
+const server = process.env.URL ? { kill() {} } : spawn('node', ['node_modules/vite/bin/vite.js', 'preview', '--port', String(port), '--strictPort'], { stdio: 'ignore' })
+if (!process.env.URL) await new Promise((r) => setTimeout(r, 2500))
 const out = process.env.SHOT_DIR ?? '/workspace'
 const errors = []
 const browser = await chromium.launch({ executablePath: process.env.CHROME ?? '/usr/bin/google-chrome', args: ['--no-sandbox'] })
@@ -12,7 +12,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()))
   page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto(`http://localhost:${port}/`)
+  await page.goto(process.env.URL ?? `http://localhost:${port}/`)
   await page.waitForSelector('.arch-node')
   // шаблон Twitter
   await page.click('text=Шаблоны')
