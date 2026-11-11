@@ -1,7 +1,8 @@
 import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type Edge, type EdgeChange, type Node, type NodeChange } from '@xyflow/react'
 import { create } from 'zustand'
-import { GPU_PRESETS } from './sim/ai'
+import { GPU_PRESETS, modelScale } from './sim/ai'
 import { CATALOG, defaultEdgeData } from './sim/catalog'
+import { estimateCost, type CostEstimate, type CostProfile } from './sim/cost'
 import { initialState, patternRps, simulateTick, type Pattern } from './sim/engine'
 import { autoLayout } from './sim/layout'
 import type { ScenarioResult, Slo } from './sim/scenarios'
@@ -18,6 +19,7 @@ export interface LoadSettings {
   pattern: Pattern
   period: number
   readRatio: number
+  costProfile: CostProfile
 }
 
 export interface HistoryPoint {
@@ -57,6 +59,7 @@ interface Store {
   speed: number
   simState: SimState
   last: TickResult | null
+  cost: CostEstimate | null
   history: HistoryPoint[]
   faults: Faults
   past: Snapshot[]
@@ -109,7 +112,7 @@ const toRF = (g: SimGraph): Snapshot => {
   }
 }
 
-const DEFAULT_LOAD: LoadSettings = { value: 1000, unit: 'rps', pattern: 'constant', period: 120, readRatio: 0.8 }
+const DEFAULT_LOAD: LoadSettings = { value: 1000, unit: 'rps', pattern: 'constant', period: 120, readRatio: 0.8, costProfile: 'wave' }
 const DEFAULT_SLO: Slo = { p99Ms: 500, errorPct: 1 }
 
 function initial(): Pick<Store, 'nodes' | 'edges' | 'load' | 'projectName' | 'slo'> {
@@ -132,6 +135,7 @@ export const useStore = create<Store>((set, get) => ({
   speed: 1,
   simState: initialState(),
   last: null,
+  cost: null,
   history: [],
   faults: {},
   past: [],
@@ -188,8 +192,8 @@ export const useStore = create<Store>((set, get) => ({
         }
         if (params.gpuType && params.gpuType !== n.data.params.gpuType && GPU_PRESETS[params.gpuType]) {
           const g = GPU_PRESETS[params.gpuType]
-          const small = /\b(7|8|9)b\b/i.test(p.model ?? '') ? 2.5 : 1 // маленькие модели быстрее
-          p = { ...p, tokensPerSec: Math.round(g.tokensPerSec * small), costPerHour: g.costPerHour, ttftMs: g.ttftMs }
+          const ms = modelScale(p.model)
+          p = { ...p, tokensPerSec: Math.round(g.tokensPerSec * ms.speed), costPerHour: +(g.costPerHour * ms.gpus).toFixed(2), ttftMs: g.ttftMs }
         }
         return { ...n, data: { ...n.data, label: label ?? n.data.label, params: p } }
       }),
@@ -263,20 +267,25 @@ export const useStore = create<Store>((set, get) => ({
   setSpeed: (s) => set({ speed: s }),
   resetSim: () => set({ simState: initialState(), history: [], last: null, running: false }),
   tick: () => {
-    const { load, speed, simState, faults, history } = get()
+    const { load, speed, faults, history } = get()
+    let { simState } = get()
     const rps = patternRps(load.pattern, get().baseRps(), simState.t, load.period)
+    if (simState.t === 0 && Object.keys(simState.instances).length === 0) {
+      // прогрев autoscaling: стартуем с числом инстансов под текущую нагрузку
+      simState = { ...simulateTick(get().graph(), { rps, readRatio: load.readRatio }, simState, faults, { dt: 0, samples: 0, steadyAutoscale: true }).state, lastScale: {} }
+    }
     const res = simulateTick(get().graph(), { rps, readRatio: load.readRatio }, simState, faults, { dt: speed, samples: 1200 })
     const h: HistoryPoint = {
       t: simState.t, offered: rps, throughput: res.global.throughput, errorPct: res.global.errorRate * 100,
       p50: res.global.p50, p95: res.global.p95, p99: res.global.p99, cost: res.global.costMonth,
     }
-    set({ simState: res.state, last: res, history: [...history.slice(-149), h] })
+    set({ simState: res.state, last: res, history: [...history.slice(-149), h], cost: estimateCost(get().graph(), get().baseRps(), load.readRatio, load.costProfile) })
   },
   preview: () => {
     const { load, simState, faults } = get()
     const rps = patternRps(load.pattern, get().baseRps(), simState.t, load.period)
-    const res = simulateTick(get().graph(), { rps, readRatio: load.readRatio }, { ...simState }, faults, { dt: 0, samples: 1500 })
-    set({ last: res })
+    const res = simulateTick(get().graph(), { rps, readRatio: load.readRatio }, { ...simState }, faults, { dt: 0, samples: 1500, steadyAutoscale: true })
+    set({ last: res, cost: estimateCost(get().graph(), get().baseRps(), load.readRatio, load.costProfile) })
   },
   toggleFault: (id) => {
     const f = { ...get().faults }

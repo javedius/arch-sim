@@ -1,6 +1,7 @@
 import { Pause, Play, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react'
 import { useState } from 'react'
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { COST_PROFILES, type CostProfile } from '../sim/cost'
 import { PATTERN_LABELS, type Pattern } from '../sim/engine'
 import { useStore } from '../store'
 import { fmtMoney, fmtMs, fmtNum, fmtPct } from '../ui/format'
@@ -15,6 +16,7 @@ export function BottomPanel() {
   const history = useStore((s) => s.history)
   const slo = useStore((s) => s.slo)
   const t = useStore((s) => s.simState.t)
+  const cost = useStore((s) => s.cost)
   const st = useStore.getState()
   const [open, setOpen] = useState(true)
   const g = last?.global
@@ -55,18 +57,26 @@ export function BottomPanel() {
           <input type="range" min={0} max={100} value={Math.round(load.readRatio * 100)} onChange={(e) => st.setLoad({ readRatio: Number(e.target.value) / 100 })} />
           <span className="mono">{Math.round(load.readRatio * 100)}/{100 - Math.round(load.readRatio * 100)}</span>
         </div>
+        <div className="ctl-group">
+          <span className="ctl-label" title="Как считать месячную стоимость: нагрузка в поле «Нагрузка» — это пик">Стоимость по</span>
+          <select value={load.costProfile} title={COST_PROFILES[load.costProfile].hint} onChange={(e) => st.setLoad({ costProfile: e.target.value as CostProfile })}>
+            {Object.entries(COST_PROFILES).map(([k, v]) => <option key={k} value={k}>{v.label} (≈{Math.round(v.ratio * 100)}%)</option>)}
+          </select>
+        </div>
         <button className="icon collapse" onClick={() => setOpen(!open)} title={open ? 'Свернуть графики' : 'Развернуть графики'}>{open ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button>
       </div>
       {g && (
         <div className="kpis">
-          <div className="kpi"><span>Вход</span><b>{fmtNum(g.offered)} rps</b><i>{fmtNum(g.offered * 60)} rpm</i></div>
+          <div className="kpi"><span>Сейчас</span><b>{fmtNum(g.offered)} rps</b><i>{fmtNum(g.offered * 60)} rpm</i></div>
+          {cost && <div className="kpi"><span>Пик / средний</span><b>{fmtNum(cost.peakRps)} / {fmtNum(cost.avgRps)}</b><i>rps · {COST_PROFILES[cost.profile].label.toLowerCase()}</i></div>}
           <div className="kpi"><span>Throughput</span><b>{fmtNum(g.throughput)} rps</b></div>
           <div className="kpi"><span>p50</span><b>{fmtMs(g.p50)}</b></div>
           <div className="kpi"><span>p95</span><b>{fmtMs(g.p95)}</b></div>
           <div className={`kpi ${g.p99 > slo.p99Ms ? 'bad' : 'good'}`}><span>p99</span><b>{fmtMs(g.p99)}</b><i>SLO {slo.p99Ms} мс</i></div>
           <div className={`kpi ${g.errorRate * 100 > slo.errorPct ? 'bad' : 'good'}`}><span>Ошибки</span><b>{fmtPct(g.errorRate, 2)}</b>{g.rejectedRate > 0 && <i>429: {fmtPct(g.rejectedRate, 1)}</i>}</div>
           <div className="kpi"><span>Пик загрузки</span><b>{fmtPct(Math.min(g.maxUtil, 9.99), 0)}</b></div>
-          <div className="kpi"><span>Стоимость</span><b>{fmtMoney(g.costMonth)}</b><i>в месяц</i></div>
+          {cost && <div className="kpi cost" title={`Переменная (токены, запросы): ${fmtMoney(cost.variable)} · фиксированная (инстансы): ${fmtMoney(cost.fixed)}`}><span>Стоимость / мес</span><b>{fmtMoney(cost.total)}</b><i>по среднему · пик 24/7: {fmtMoney(cost.totalAtPeak)}</i></div>}
+          {cost && cost.avgRps > 0 && <div className="kpi"><span>$ / 1M запросов</span><b>{fmtMoney(cost.perMillionRequests)}</b><i>{fmtNum(cost.avgRps * 2_628_000)} запр./мес</i></div>}
         </div>
       )}
       {open && (

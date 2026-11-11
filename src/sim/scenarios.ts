@@ -1,5 +1,6 @@
 import { aiRecommendations, deriveGraph } from './ai'
 import { CATALOG } from './catalog'
+import { COST_PROFILES, estimateCost, type CostProfile } from './cost'
 import { initialState, simulateTick } from './engine'
 import type { Faults, SimGraph, TickResult } from './types'
 
@@ -141,6 +142,7 @@ export interface ScenarioResult {
     avgErrorPct: number
     peakThroughput: number
     avgCostMonth: number
+    costProfile: CostProfile
     breakingRps?: number
     recoverySec?: number
     passed: boolean
@@ -152,7 +154,7 @@ export interface ScenarioResult {
 export function runScenario(
   graph: SimGraph,
   id: ScenarioId,
-  opts: { baseRps: number; readRatio: number; slo: Slo; target?: string; samples?: number },
+  opts: { baseRps: number; readRatio: number; slo: Slo; target?: string; samples?: number; costProfile?: CostProfile },
 ): ScenarioResult {
   const sc = SCENARIOS.find((s) => s.id === id)!
   let state = initialState(7)
@@ -164,6 +166,9 @@ export function runScenario(
       avgUtil: 0, utilSum: 0, n: 0, capacity: 0, instances: n.params.instances,
     }),
   )
+  // прогрев: autoscale-узлы стартуют с числом инстансов под начальную нагрузку
+  state = simulateTick(graph, { rps: sc.load(0, opts.baseRps), readRatio: opts.readRatio }, state, {}, { dt: 0, samples: 0, steadyAutoscale: true }).state
+  state.lastScale = {}
   let breakingRps: number | undefined
   let baselineP99: number | undefined
   let last: TickResult | undefined
@@ -229,7 +234,8 @@ export function runScenario(
     peaks: peakList,
     summary: {
       maxP99, avgP99: avg(series.map((p) => p.p99)), maxErrorPct: maxErr, avgErrorPct: avg(series.map((p) => p.errorPct)),
-      peakThroughput: Math.max(0, ...series.map((p) => p.throughput)), avgCostMonth: avg(series.map((p) => p.costMonth)),
+      peakThroughput: Math.max(0, ...series.map((p) => p.throughput)), avgCostMonth: estimateCost(graph, opts.baseRps, opts.readRatio, opts.costProfile ?? 'wave').total,
+      costProfile: opts.costProfile ?? 'wave',
       breakingRps: sc.id === 'stress' ? breakingRps : undefined, recoverySec, passed: violations.length === 0, sloViolations: violations,
     },
     recommendations: [],
@@ -376,7 +382,7 @@ export function reportMarkdown(graph: SimGraph, r: ScenarioResult, slo: Slo): st
     `- Пиковая пропускная способность: ${Math.round(s.peakThroughput).toLocaleString('ru')} RPS`,
     s.breakingRps ? `- Точка отказа: ~${Math.round(s.breakingRps).toLocaleString('ru')} RPS` : '',
     s.recoverySec !== undefined ? `- Время восстановления: ${s.recoverySec} с` : '',
-    `- Стоимость: ~$${Math.round(s.avgCostMonth).toLocaleString('ru')}/мес`,
+    `- Стоимость: ~$${Math.round(s.avgCostMonth).toLocaleString('ru')}/мес (профиль «${COST_PROFILES[s.costProfile].label}», средний трафик ≈ ${Math.round(COST_PROFILES[s.costProfile].ratio * 100)}% пика)`,
     '',
     '## Узлы (пиковые значения)',
     '',

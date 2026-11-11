@@ -159,9 +159,9 @@ describe('patterns', () => {
     expect(patternRps('spike', 100, 60, 120)).toBe(500)
     expect(patternRps('spike', 100, 10, 120)).toBe(100)
   })
-  it('wave в диапазоне 25–100%', () => {
+  it('wave в диапазоне 20–100%', () => {
     const v = Array.from({ length: 120 }, (_, t) => patternRps('wave', 100, t, 120))
-    expect(Math.min(...v)).toBeCloseTo(25, 0)
+    expect(Math.min(...v)).toBeCloseTo(20, 0)
     expect(Math.max(...v)).toBeCloseTo(100, 0)
   })
 })
@@ -169,7 +169,7 @@ describe('patterns', () => {
 describe('scenarios & templates', () => {
   it('все шаблоны симулируются без ошибок на своей нагрузке', () => {
     for (const t of TEMPLATES) {
-      const r = simulateTick(t.graph, { rps: t.rps, readRatio: t.readRatio }, initialState())
+      const r = simulateTick(t.graph, { rps: t.rps, readRatio: t.readRatio }, initialState(), {}, { steadyAutoscale: true })
       expect(r.global.errorRate, t.id).toBeLessThan(0.05)
       expect(r.global.p99, t.id).toBeGreaterThan(0)
     }

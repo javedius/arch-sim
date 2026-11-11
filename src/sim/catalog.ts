@@ -133,7 +133,7 @@ export const CATALOG: Record<Kind, KindDef> = {
   external: {
     kind: 'external', title: 'External API', short: 'Ext API', category: 'Внешнее', color: '#94a3b8', edgeMode: 'call',
     description: 'Сторонний API (платежи, SMS, карты). Имеет лимиты и может падать — нужен circuit breaker и таймауты.',
-    defaults: base({ maxRps: 300, latencyMs: 150, failureRate: 0.5, costPerHour: 0, costPer1kReq: 0.5 }),
+    defaults: base({ maxRps: 300, latencyMs: 150, failureRate: 0.5, costPerHour: 0, costPer1kReq: 0.1 }),
     fields: MANAGED,
   },
   llm: {
@@ -145,19 +145,19 @@ export const CATALOG: Record<Kind, KindDef> = {
   llmapi: {
     kind: 'llmapi', title: 'LLM API (OpenAI/Anthropic…)', short: 'LLM API', category: 'AI', color: '#c084fc', edgeMode: 'call',
     description: 'Внешний LLM-провайдер. Латентность = TTFT + выходные токены / скорость. Цена — за токены. Ёмкость ограничена TPM-лимитом (сверх — 429 от провайдера).',
-    defaults: base({ instances: 1, maxRps: 1, latencyMs: 0, costPerHour: 0, failureRate: 0.3, azCount: 3, model: 'gpt-4o-class', inTokens: 1500, outTokens: 300, tokensPerSec: 80, ttftMs: 450, costPer1MIn: 2.5, costPer1MOut: 10, tpmLimit: 2_000_000 }),
-    fields: ['model', 'inTokens', 'outTokens', 'tokensPerSec', 'ttftMs', 'costPer1MIn', 'costPer1MOut', 'tpmLimit', 'failureRate', 'region'],
+    defaults: base({ instances: 1, maxRps: 1, latencyMs: 0, costPerHour: 0, failureRate: 0.2, azCount: 3, model: 'gpt-5-mini', inTokens: 1500, outTokens: 250, tokensPerSec: 100, ttftMs: 500, costPer1MIn: 0.25, costPer1MOut: 2, cachedInputPct: 60, cacheDiscount: 90, tpmLimit: 4_000_000 }),
+    fields: ['model', 'inTokens', 'outTokens', 'cachedInputPct', 'cacheDiscount', 'tokensPerSec', 'ttftMs', 'costPer1MIn', 'costPer1MOut', 'tpmLimit', 'failureRate', 'region'],
   },
   gpullm: {
     kind: 'gpullm', title: 'Self-hosted LLM (GPU)', short: 'GPU LLM', category: 'AI', color: '#e879f9', edgeMode: 'call',
     description: 'Своя модель на GPU (vLLM/TGI). Ёмкость реплики = batch / время генерации. Больше batch — выше пропускная, но каждый поток чуть медленнее. Платится $/час за GPU.',
-    defaults: base({ instances: 2, maxRps: 1, latencyMs: 0, cpu: 16, ramGb: 128, costPerHour: 4, azCount: 2, maxInstances: 16, model: 'Llama-3.1-70B', gpuType: 'H100', batchSize: 16, tokensPerSec: 60, ttftMs: 150, inTokens: 1500, outTokens: 300 }),
+    defaults: base({ instances: 2, maxRps: 1, latencyMs: 0, cpu: 16, ramGb: 128, costPerHour: 3.99, azCount: 2, maxInstances: 16, autoscale: true, model: 'Llama-3.1-8B', gpuType: 'H100', batchSize: 64, tokensPerSec: 158, ttftMs: 100, inTokens: 1500, outTokens: 200 }),
     fields: ['model', 'gpuType', 'batchSize', 'tokensPerSec', 'ttftMs', 'inTokens', 'outTokens', 'instances', 'costPerHour', 'failureRate', 'region', 'azCount', 'autoscale', 'maxInstances'],
   },
   embedding: {
     kind: 'embedding', title: 'Embedding service', short: 'Embed', category: 'AI', color: '#a78bfa', edgeMode: 'call',
     description: 'Превращает текст в векторы. Ёмкость = токенов/с на инстанс / входные токены запроса.',
-    defaults: base({ instances: 2, maxRps: 1, latencyMs: 5, cpu: 8, ramGb: 24, costPerHour: 0.75, azCount: 2, model: 'bge-m3', inTokens: 300, throughputTps: 40000, costPer1MIn: 0 }),
+    defaults: base({ instances: 2, maxRps: 1, latencyMs: 5, cpu: 8, ramGb: 16, costPerHour: 0.3, azCount: 2, model: 'bge-m3 (self-hosted)', inTokens: 300, throughputTps: 40000, costPer1MIn: 0 }),
     fields: ['model', 'inTokens', 'throughputTps', 'latencyMs', 'costPer1MIn', 'instances', 'costPerHour', 'failureRate', 'region', 'azCount', 'autoscale', 'maxInstances'],
   },
   vectordb: {
@@ -242,13 +242,15 @@ export const FIELD_DEFS: Record<keyof Params, FieldDef> = {
   costPer1MIn: { label: 'Цена 1M вход. токенов', unit: '$', type: 'number', min: 0, step: 0.05 },
   costPer1MOut: { label: 'Цена 1M выход. токенов', unit: '$', type: 'number', min: 0, step: 0.1 },
   tpmLimit: { label: 'TPM лимит', unit: 'ток/мин', type: 'number', min: 1000, step: 100000, hint: 'Tokens per minute на аккаунт/ключ' },
-  gpuType: { label: 'GPU', type: 'select', options: ['L4', 'A10G', 'A100-80G', 'H100', 'H200'], hint: 'Выбор GPU подставляет типичную скорость и цену' },
+  gpuType: { label: 'GPU', type: 'select', options: ['L4', 'A10G', 'A100-80G', 'H100', 'H200'], hint: 'Подставляет скорость потока и $/час (для 70B — реплика из 4 GPU)' },
   batchSize: { label: 'Batch (continuous)', type: 'number', min: 1, max: 256, step: 1, hint: 'Одновременных потоков на реплику' },
   throughputTps: { label: 'Пропускная', unit: 'ток/с', type: 'number', min: 1, step: 1000, hint: 'Токенов в секунду на инстанс' },
   recall: { label: 'Recall@k', unit: '%', type: 'number', min: 50, max: 100, step: 1, hint: 'Выше recall — точнее, но медленнее поиск' },
   indexM: { label: 'Размер индекса', unit: 'млн векторов', type: 'number', min: 0.01, step: 1 },
   steps: { label: 'Шагов на запрос', type: 'number', min: 1, max: 50, step: 1, hint: 'Каждый шаг повторяет все call-вызовы агента' },
   blockRate: { label: 'Доля блокировок', unit: '%', type: 'number', min: 0, max: 100, step: 0.5 },
+  cachedInputPct: { label: 'Prompt cache hit', unit: '% входа', type: 'number', min: 0, max: 100, step: 5, hint: 'Доля входных токенов, попавших в кэш промпта (системный промпт, инструкции)' },
+  cacheDiscount: { label: 'Скидка на кэш. вход', unit: '%', type: 'number', min: 0, max: 100, step: 5, hint: 'OpenAI GPT-5.x и Gemini: 90%' },
 }
 
 export function defaultEdgeData(sourceKind: Kind, targetKind?: Kind): EdgeData {

@@ -84,7 +84,7 @@ function NodeInspector({ id }: { id: string }) {
           {m.backlog !== undefined && <Metric label="Backlog" value={`${fmtNum(m.backlog)} msg`} color={(m.lagSec ?? 0) > 5 ? '#ef4444' : undefined} />}
           {m.lagSec !== undefined && <Metric label="Lag" value={Number.isFinite(m.lagSec) ? fmtMs(m.lagSec * 1000) : '∞'} />}
           <Metric label="Инстансов" value={String(m.instances)} />
-          <Metric label="Стоимость" value={`${fmtMoney(m.costMonth)}/мес`} />
+          <NodeCostMetric id={id} />
         </div>
       )}
       <TokenPanel kind={n.data.kind} params={p} served={m?.served ?? 0} />
@@ -104,6 +104,43 @@ function NodeInspector({ id }: { id: string }) {
         <button onClick={() => remove(id)}><Trash2 size={14} /> Удалить</button>
       </div>
     </aside>
+  )
+}
+
+function CostKpi() {
+  const c = useStore((s) => s.cost)
+  return <Metric label="Стоимость (средн.)" value={c ? `${fmtMoney(c.total)}/мес` : '—'} />
+}
+
+function NodeCostMetric({ id }: { id: string }) {
+  const c = useStore((s) => s.cost?.nodes.find((n) => n.id === id))
+  if (!c) return null
+  return <Metric label="Стоимость (средн.)" value={`${fmtMoney(c.total)}/мес`} />
+}
+
+function CostBreakdown() {
+  const cost = useStore((s) => s.cost)
+  if (!cost || cost.total <= 0) return null
+  const top = cost.nodes.filter((n) => n.total > 0)
+  const max = top[0]?.total || 1
+  const select = (id: string) => useStore.setState({ nodes: useStore.getState().nodes.map((n) => ({ ...n, selected: n.id === id })) })
+  return (
+    <>
+      <div className="ins-section">Стоимость по узлам · {fmtMoney(cost.total)}/мес</div>
+      <div className="muted small cost-note">Средний трафик {fmtNum(cost.avgRps)} rps ({Math.round(cost.ratio * 100)}% от пика {fmtNum(cost.peakRps)}). Токены/запросы: {fmtMoney(cost.variable)}, инстансы: {fmtMoney(cost.fixed)}.</div>
+      <div className="cost-list">
+        {top.slice(0, 12).map((n) => (
+          <div key={n.id} className="cost-row" onClick={() => select(n.id)} title={`Инстансы: ${fmtMoney(n.fixed)} (×${n.instances}) · токены/запросы: ${fmtMoney(n.variable)}`}>
+            <div className="cost-top"><span className="cost-name">{n.label}</span><b>{fmtMoney(n.total)}</b><i>{Math.round((n.total / cost.total) * 100)}%</i></div>
+            <div className="cost-bar">
+              <div className="fixed" style={{ width: `${(n.fixed / max) * 100}%` }} />
+              <div className="var" style={{ width: `${(n.variable / max) * 100}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="cost-legend"><span><i className="sw fixed" /> инстансы/GPU</span><span><i className="sw var" /> токены/запросы</span></div>
+    </>
   )
 }
 
@@ -200,11 +237,12 @@ function Overview() {
           <Metric label="p99" value={fmtMs(g.p99)} color={okP99 ? '#22c55e' : '#ef4444'} />
           <Metric label="Ошибки" value={fmtPct(g.errorRate, 2)} color={okErr ? '#22c55e' : '#ef4444'} />
           {g.rejectedRate > 0 && <Metric label="Отклонено 429" value={fmtPct(g.rejectedRate, 2)} color="#eab308" />}
-          <Metric label="Стоимость" value={`${fmtMoney(g.costMonth)}/мес`} />
+          <CostKpi />
           <Metric label="Горлышко" value={g.bottleneck ? nodes.find((n) => n.id === g.bottleneck)?.data.label ?? '—' : 'нет'} color={g.bottleneck ? '#eab308' : '#22c55e'} />
         </div>
       )}
       {last?.warnings.map((w) => <div key={w} className="warn-box">{w}</div>)}
+      <CostBreakdown />
       <div className="ins-section">SLO</div>
       <div className="fields">
         <label className="field"><span className="f-label">p99 не больше <i>мс</i></span><input type="number" min={1} value={slo.p99Ms} onChange={(e) => setSlo({ p99Ms: Math.max(1, Number(e.target.value)) })} /></label>

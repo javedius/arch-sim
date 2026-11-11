@@ -33,7 +33,7 @@ export function TestPlans() {
     setBusy(true)
     setTimeout(() => {
       const g = st.graph()
-      const results = ids.map((id) => runScenario(g, id, { baseRps: rps, readRatio: st.load.readRatio, slo, target: tgt }))
+      const results = ids.map((id) => runScenario(g, id, { baseRps: rps, readRatio: st.load.readRatio, slo, target: tgt, costProfile: st.load.costProfile }))
       if (ids.length > 1) {
         setSuite(results)
         st.setTestResult(null)
@@ -132,7 +132,7 @@ function ResultView({ r }: { r: ScenarioResult }) {
         <div className="kpi"><span>Пик throughput</span><b>{fmtNum(s.peakThroughput)} rps</b></div>
         {s.breakingRps !== undefined && <div className="kpi bad"><span>Точка отказа</span><b>{fmtNum(s.breakingRps)} rps</b></div>}
         {s.recoverySec !== undefined && <div className="kpi"><span>Восстановление</span><b>{s.recoverySec} с</b></div>}
-        <div className="kpi"><span>Стоимость</span><b>{fmtMoney(s.avgCostMonth)}/мес</b></div>
+        <div className="kpi"><span>Стоимость (средн. трафик)</span><b>{fmtMoney(s.avgCostMonth)}/мес</b></div>
       </div>
       <div className="res-charts">
         <div className="chart big">

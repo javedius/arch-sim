@@ -46,6 +46,8 @@ export interface Params {
   indexM?: number // размер индекса, млн векторов
   steps?: number // шагов агента на запрос
   blockRate?: number // % заблокированных запросов
+  cachedInputPct?: number // % входных токенов из prompt cache
+  cacheDiscount?: number // скидка на кэшированные входные токены, %
 }
 
 export type EdgeMode = 'route' | 'call'

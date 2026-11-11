@@ -82,6 +82,8 @@ export interface SimOptions {
   dt?: number // шаг симуляции, сек
   samples?: number // сэмплов Монте-Карло для перцентилей
   timeoutMs?: number
+  /** autoscaling в установившемся режиме: инстансов ровно столько, чтобы загрузка была ~70% */
+  steadyAutoscale?: boolean
 }
 
 export function initialState(seed = 42): SimState {
@@ -197,6 +199,10 @@ export function simulateTick(
     const p = n.params
     const { r, w } = arr.get(id)!
     const f = faults[id] ?? {}
+    if (opts.steadyAutoscale && p.autoscale && n.kind !== 'sqldb' && n.kind !== 'client') {
+      const max = Math.max(p.maxInstances ?? p.instances, p.instances)
+      state.instances[id] = Math.min(max, Math.max(p.instances, Math.ceil((r + w) / Math.max(1e-9, p.maxRps * 0.7))))
+    }
     // упавший кэш приложение обходит (cache-aside): все чтения идут дальше, в БД
     const bypass = (n.kind === 'cache' || n.kind === 'semcache') && isDown(id)
     const down = !bypass && isDown(id)
@@ -519,9 +525,8 @@ export function patternRps(pattern: Pattern, base: number, t: number, period = 1
     case 'spike':
       return ph > period * 0.45 && ph < period * 0.6 ? base * 5 : base
     case 'wave': {
-      // «сутки»: минимум ночью ~25%, пик вечером 100%
-      const x = (ph / period) * 2 * Math.PI
-      return base * (0.625 - 0.375 * Math.cos(x))
+      // «сутки»: ночью ~20% пика, короткий вечерний пик 100%, среднее ≈ 54% пика
+      return base * (0.2 + 0.8 * Math.abs(Math.sin((Math.PI * ph) / period)) ** 3)
     }
   }
 }

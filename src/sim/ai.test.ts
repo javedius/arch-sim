@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { aiRecommendations, batchSlowdown, deriveNode, tokenInfo } from './ai'
+import { aiRecommendations, batchSlowdown, deriveNode, llmApiCostPerReq, tokenInfo } from './ai'
+import { COST_PROFILES, estimateCost } from './cost'
 import { CATALOG, defaultEdgeData } from './catalog'
 import { initialState, simulateTick } from './engine'
 import { recommend, runScenario } from './scenarios'
@@ -16,7 +17,7 @@ describe('токенная математика', () => {
     expect(i.latencyMs).toBeCloseTo(2500)
   })
   it('LLM API: цена = in×$in/1M + out×$out/1M', () => {
-    const i = tokenInfo('llmapi', P('llmapi', { inTokens: 1000, outTokens: 500, costPer1MIn: 3, costPer1MOut: 15 }))!
+    const i = tokenInfo('llmapi', P('llmapi', { inTokens: 1000, outTokens: 500, costPer1MIn: 3, costPer1MOut: 15, cachedInputPct: 0 }))!
     expect(i.costPerReq).toBeCloseTo(0.003 + 0.0075, 8)
   })
   it('LLM API: ёмкость = TPM / токенов на запрос / 60', () => {
@@ -48,14 +49,14 @@ describe('токенная математика', () => {
     expect(hi.maxRps).toBeLessThan(lo.maxRps)
   })
   it('deriveNode подставляет цену за 1000 запросов из токенов', () => {
-    const n = deriveNode(node('l', 'llmapi', { inTokens: 1000, outTokens: 0, costPer1MIn: 2 }))
+    const n = deriveNode(node('l', 'llmapi', { inTokens: 1000, outTokens: 0, costPer1MIn: 2, cachedInputPct: 0 }))
     expect(n.params.costPer1kReq).toBeCloseTo(2)
   })
 })
 
 describe('AI в симуляции', () => {
   const chain = (extra: Partial<Params> = {}): SimGraph => ({
-    nodes: [node('c', 'client'), node('llm', 'llmapi', { inTokens: 900, outTokens: 100, tpmLimit: 600_000, failureRate: 0, costPer1MIn: 1, costPer1MOut: 0, ...extra })],
+    nodes: [node('c', 'client'), node('llm', 'llmapi', { inTokens: 900, outTokens: 100, tpmLimit: 600_000, failureRate: 0, costPer1MIn: 1, costPer1MOut: 0, cachedInputPct: 0, ...extra })],
     edges: [edge('c', 'llm', 'client', 'llmapi')],
   })
   it('сверх TPM — 429 от провайдера считаются ошибками', () => {
@@ -102,7 +103,7 @@ describe('AI в симуляции', () => {
     expect(r.nodes.l.arrivals).toBeCloseTo(90)
   })
   it('GPU LLM перегружается и даёт рекомендацию', () => {
-    const g: SimGraph = { nodes: [node('c', 'client'), node('gpu', 'gpullm', { instances: 1, batchSize: 4 })], edges: [edge('c', 'gpu', 'client', 'gpullm')] }
+    const g: SimGraph = { nodes: [node('c', 'client'), node('gpu', 'gpullm', { instances: 1, batchSize: 4, autoscale: false })], edges: [edge('c', 'gpu', 'client', 'gpullm')] }
     const res = runScenario(g, 'load', { baseRps: 20, readRatio: 1, slo: { p99Ms: 10000, errorPct: 1 }, samples: 200 })
     expect(res.summary.passed).toBe(false)
     expect(res.recommendations.some((r) => r.node === 'gpu' && r.severity === 'critical')).toBe(true)
@@ -112,7 +113,7 @@ describe('AI в симуляции', () => {
 
 describe('AI-рекомендации', () => {
   it('советует семантический кэш, guardrails и model routing', () => {
-    const g: SimGraph = { nodes: [node('c', 'client'), node('l', 'llmapi', { inTokens: 4000, outTokens: 500 })], edges: [edge('c', 'l', 'client', 'llmapi')] }
+    const g: SimGraph = { nodes: [node('c', 'client'), node('l', 'llmapi', { inTokens: 4000, outTokens: 500, costPer1MIn: 2.5, costPer1MOut: 15 })], edges: [edge('c', 'l', 'client', 'llmapi')] }
     const titles = aiRecommendations(g).map((r) => r.title).join('|')
     expect(titles).toContain('семантического кэша')
     expect(titles).toContain('guardrails')
@@ -131,10 +132,64 @@ describe('AI-рекомендации', () => {
   it('AI-шаблоны выдерживают свою нагрузку и укладываются в SLO', () => {
     for (const id of ['rag', 'multi-agent', 'ai-support']) {
       const t = TEMPLATES.find((x) => x.id === id)!
-      const r = simulateTick(t.graph, { rps: t.rps, readRatio: t.readRatio }, initialState(), {}, { samples: 3000 })
+      const r = simulateTick(t.graph, { rps: t.rps, readRatio: t.readRatio }, initialState(), {}, { samples: 3000, steadyAutoscale: true })
       expect(r.global.errorRate, id).toBeLessThan((t.slo?.errorPct ?? 1) / 100 + 0.01)
       expect(r.global.p99, id).toBeLessThan(t.slo!.p99Ms)
       expect(r.global.costMonth, id).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('модель стоимости', () => {
+  it('prompt caching: кэшированный вход со скидкой 90%', () => {
+    const base = { inTokens: 2000, outTokens: 0, costPer1MIn: 1, costPer1MOut: 0 }
+    expect(llmApiCostPerReq(P('llmapi', { ...base, cachedInputPct: 0 }))).toBeCloseTo(0.002, 8)
+    // 1000 некэш. × $1/1M + 1000 кэш. × $0.1/1M
+    expect(llmApiCostPerReq(P('llmapi', { ...base, cachedInputPct: 50, cacheDiscount: 90 }))).toBeCloseTo(0.0011, 8)
+    expect(llmApiCostPerReq(P('llmapi', { ...base, cachedInputPct: 100, cacheDiscount: 100 }))).toBeCloseTo(0, 8)
+  })
+  it('дефолтный LLM API — дешёвая mini-модель: < $0.001 за запрос', () => {
+    const c = llmApiCostPerReq(P('llmapi'))
+    expect(c).toBeGreaterThan(0.0003)
+    expect(c).toBeLessThan(0.001)
+  })
+  it('пресет GPU: H100 + 8B с batch 64 даёт ~4000 ток/с на реплику', () => {
+    const i = tokenInfo('gpullm', P('gpullm'))!
+    const outTps = i.maxRps * (P('gpullm').outTokens ?? 0)
+    expect(outTps).toBeGreaterThan(2500)
+    expect(outTps).toBeLessThan(5500)
+  })
+  it('стоимость по среднему трафику меньше, чем пик 24/7', () => {
+    const g: SimGraph = { nodes: [node('c', 'client'), node('l', 'llmapi', { tpmLimit: 1e9 })], edges: [edge('c', 'l', 'client', 'llmapi')] }
+    const wave = estimateCost(g, 100, 1, 'wave')
+    const peak = estimateCost(g, 100, 1, 'peak')
+    expect(wave.avgRps).toBeCloseTo(100 * COST_PROFILES.wave.ratio)
+    expect(wave.total).toBeCloseTo(peak.total * COST_PROFILES.wave.ratio, 0)
+    expect(wave.totalAtPeak).toBeCloseTo(peak.total, 0)
+    expect(COST_PROFILES.wave.ratio).toBeGreaterThan(0.45)
+    expect(COST_PROFILES.wave.ratio).toBeLessThan(0.6)
+  })
+  it('autoscale-узлы оплачиваются по инстансам для среднего трафика, не ниже минимума', () => {
+    const g: SimGraph = { nodes: [node('c', 'client'), node('a', 'webserver', { instances: 2, maxRps: 100, costPerHour: 1, autoscale: true, maxInstances: 50 })], edges: [edge('c', 'a', 'client', 'webserver')] }
+    const peak = estimateCost(g, 1400, 1, 'peak') // нужно 20 инстансов
+    expect(peak.nodes[0].instances).toBe(20)
+    const biz = estimateCost(g, 1400, 1, 'business') // 420 rps → 6
+    expect(biz.nodes[0].instances).toBe(6)
+    expect(estimateCost(g, 10, 1, 'peak').nodes[0].instances).toBe(2)
+  })
+  it('разбивка по узлам складывается в итог', () => {
+    const t = TEMPLATES.find((x) => x.id === 'ai-support')!
+    const c = estimateCost(t.graph, t.rps, t.readRatio, 'wave')
+    expect(c.nodes.reduce((s, n) => s + n.total, 0)).toBeCloseTo(c.total, 4)
+    expect(c.fixed + c.variable).toBeCloseTo(c.total, 4)
+  })
+  it('AI-шаблоны стоят разумно (суточная волна)', () => {
+    const range: Record<string, [number, number]> = { 'ai-support': [8000, 40000], rag: [3000, 25000], 'multi-agent': [5000, 30000] }
+    for (const [id, [lo, hi]] of Object.entries(range)) {
+      const t = TEMPLATES.find((x) => x.id === id)!
+      const c = estimateCost(t.graph, t.rps, t.readRatio, 'wave')
+      expect(c.total, id).toBeGreaterThan(lo)
+      expect(c.total, id).toBeLessThan(hi)
     }
   })
 })
