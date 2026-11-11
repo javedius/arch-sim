@@ -1,5 +1,6 @@
 import { addEdge, applyEdgeChanges, applyNodeChanges, type Connection, type Edge, type EdgeChange, type Node, type NodeChange } from '@xyflow/react'
 import { create } from 'zustand'
+import { GPU_PRESETS } from './sim/ai'
 import { CATALOG, defaultEdgeData } from './sim/catalog'
 import { initialState, patternRps, simulateTick, type Pattern } from './sim/engine'
 import { autoLayout } from './sim/layout'
@@ -184,6 +185,11 @@ export const useStore = create<Store>((set, get) => ({
         if (params.cpu !== undefined && n.data.params.cpu > 0 && params.cpu !== n.data.params.cpu && patch.maxRps === undefined) {
           const k = params.cpu / n.data.params.cpu
           p = { ...p, maxRps: Math.max(1, Math.round(n.data.params.maxRps * k)), costPerHour: +(n.data.params.costPerHour * k).toFixed(4) }
+        }
+        if (params.gpuType && params.gpuType !== n.data.params.gpuType && GPU_PRESETS[params.gpuType]) {
+          const g = GPU_PRESETS[params.gpuType]
+          const small = /\b(7|8|9)b\b/i.test(p.model ?? '') ? 2.5 : 1 // маленькие модели быстрее
+          p = { ...p, tokensPerSec: Math.round(g.tokensPerSec * small), costPerHour: g.costPerHour, ttftMs: g.ttftMs }
         }
         return { ...n, data: { ...n.data, label: label ?? n.data.label, params: p } }
       }),

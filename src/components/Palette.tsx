@@ -3,7 +3,7 @@ import type { Kind } from '../sim/types'
 import { KIND_ICON } from '../ui/icons'
 import { useState } from 'react'
 
-const CATS: Category[] = ['Вход', 'Сеть', 'Вычисления', 'Данные', 'Асинхронность', 'Внешнее и AI']
+const CATS: Category[] = ['Вход', 'AI', 'Сеть', 'Вычисления', 'Данные', 'Асинхронность', 'Внешнее']
 
 export function Palette({ onAdd }: { onAdd: (k: Kind) => void }) {
   const [q, setQ] = useState('')

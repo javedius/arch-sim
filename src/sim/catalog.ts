@@ -1,6 +1,6 @@
 import type { Kind, Params, EdgeData } from './types'
 
-export type Category = 'Вход' | 'Сеть' | 'Вычисления' | 'Данные' | 'Асинхронность' | 'Внешнее и AI'
+export type Category = 'Вход' | 'Сеть' | 'Вычисления' | 'Данные' | 'Асинхронность' | 'AI' | 'Внешнее'
 
 export interface KindDef {
   kind: Kind
@@ -131,16 +131,70 @@ export const CATALOG: Record<Kind, KindDef> = {
     fields: COMMON,
   },
   external: {
-    kind: 'external', title: 'External API', short: 'Ext API', category: 'Внешнее и AI', color: '#94a3b8', edgeMode: 'call',
+    kind: 'external', title: 'External API', short: 'Ext API', category: 'Внешнее', color: '#94a3b8', edgeMode: 'call',
     description: 'Сторонний API (платежи, SMS, карты). Имеет лимиты и может падать — нужен circuit breaker и таймауты.',
     defaults: base({ maxRps: 300, latencyMs: 150, failureRate: 0.5, costPerHour: 0, costPer1kReq: 0.5 }),
     fields: MANAGED,
   },
   llm: {
-    kind: 'llm', title: 'LLM / AI Inference', short: 'LLM', category: 'Внешнее и AI', color: '#e879f9', edgeMode: 'call',
+    kind: 'llm', title: 'LLM (упрощённая)', short: 'LLM', category: 'AI', color: '#e879f9', edgeMode: 'call',
     description: 'Инференс модели на GPU или через API. Высокая латентность и цена, низкий RPS на инстанс — классическое горлышко.',
     defaults: base({ maxRps: 8, latencyMs: 1200, cpu: 16, ramGb: 96, costPerHour: 2.5, instances: 2, maxInstances: 16, costPer1kReq: 0, model: 'Llama-3-70B (GPU A100)' }),
     fields: ['model', ...COMMON, 'costPer1kReq'],
+  },
+  llmapi: {
+    kind: 'llmapi', title: 'LLM API (OpenAI/Anthropic…)', short: 'LLM API', category: 'AI', color: '#c084fc', edgeMode: 'call',
+    description: 'Внешний LLM-провайдер. Латентность = TTFT + выходные токены / скорость. Цена — за токены. Ёмкость ограничена TPM-лимитом (сверх — 429 от провайдера).',
+    defaults: base({ instances: 1, maxRps: 1, latencyMs: 0, costPerHour: 0, failureRate: 0.3, azCount: 3, model: 'gpt-4o-class', inTokens: 1500, outTokens: 300, tokensPerSec: 80, ttftMs: 450, costPer1MIn: 2.5, costPer1MOut: 10, tpmLimit: 2_000_000 }),
+    fields: ['model', 'inTokens', 'outTokens', 'tokensPerSec', 'ttftMs', 'costPer1MIn', 'costPer1MOut', 'tpmLimit', 'failureRate', 'region'],
+  },
+  gpullm: {
+    kind: 'gpullm', title: 'Self-hosted LLM (GPU)', short: 'GPU LLM', category: 'AI', color: '#e879f9', edgeMode: 'call',
+    description: 'Своя модель на GPU (vLLM/TGI). Ёмкость реплики = batch / время генерации. Больше batch — выше пропускная, но каждый поток чуть медленнее. Платится $/час за GPU.',
+    defaults: base({ instances: 2, maxRps: 1, latencyMs: 0, cpu: 16, ramGb: 128, costPerHour: 4, azCount: 2, maxInstances: 16, model: 'Llama-3.1-70B', gpuType: 'H100', batchSize: 16, tokensPerSec: 60, ttftMs: 150, inTokens: 1500, outTokens: 300 }),
+    fields: ['model', 'gpuType', 'batchSize', 'tokensPerSec', 'ttftMs', 'inTokens', 'outTokens', 'instances', 'costPerHour', 'failureRate', 'region', 'azCount', 'autoscale', 'maxInstances'],
+  },
+  embedding: {
+    kind: 'embedding', title: 'Embedding service', short: 'Embed', category: 'AI', color: '#a78bfa', edgeMode: 'call',
+    description: 'Превращает текст в векторы. Ёмкость = токенов/с на инстанс / входные токены запроса.',
+    defaults: base({ instances: 2, maxRps: 1, latencyMs: 5, cpu: 8, ramGb: 24, costPerHour: 0.75, azCount: 2, model: 'bge-m3', inTokens: 300, throughputTps: 40000, costPer1MIn: 0 }),
+    fields: ['model', 'inTokens', 'throughputTps', 'latencyMs', 'costPer1MIn', 'instances', 'costPerHour', 'failureRate', 'region', 'azCount', 'autoscale', 'maxInstances'],
+  },
+  vectordb: {
+    kind: 'vectordb', title: 'Vector DB', short: 'VectorDB', category: 'AI', color: '#2dd4bf', edgeMode: 'call',
+    description: 'Векторный поиск (Qdrant, Milvus, pgvector). Латентность растёт с размером индекса и требуемым recall; QPS — на реплику.',
+    defaults: base({ instances: 2, maxRps: 800, latencyMs: 8, cpu: 8, ramGb: 64, costPerHour: 0.6, azCount: 2, engine: 'Qdrant', recall: 95, indexM: 10 }),
+    fields: ['engine', 'maxRps', 'recall', 'indexM', 'latencyMs', 'instances', 'costPerHour', 'failureRate', 'region', 'azCount', 'autoscale', 'maxInstances'],
+  },
+  ragorch: {
+    kind: 'ragorch', title: 'RAG Orchestrator', short: 'RAG', category: 'AI', color: '#f0abfc', edgeMode: 'call',
+    description: 'Собирает ответ: эмбеддинг запроса → поиск в векторной БД → промпт → LLM. Сам лёгкий, вся латентность — в зависимостях.',
+    defaults: base({ instances: 3, maxRps: 300, latencyMs: 15, costPerHour: 0.17, azCount: 2, autoscale: true, maxInstances: 30 }),
+    fields: COMMON,
+  },
+  agent: {
+    kind: 'agent', title: 'AI Agent (tool calls)', short: 'Agent', category: 'AI', color: '#f472b6', edgeMode: 'call',
+    description: 'Агент, который думает шагами: на каждом шаге вызывает LLM и инструменты. «Шагов на запрос» умножает все исходящие call-вызовы и складывает их латентность.',
+    defaults: base({ instances: 3, maxRps: 100, latencyMs: 20, costPerHour: 0.17, azCount: 2, steps: 4, autoscale: true, maxInstances: 30 }),
+    fields: ['steps', ...COMMON],
+  },
+  mcp: {
+    kind: 'mcp', title: 'MCP server (tools)', short: 'MCP', category: 'AI', color: '#38bdf8', edgeMode: 'call',
+    description: 'Model Context Protocol сервер: выставляет агентам инструменты (БД, API, поиск, код). Его зависимости вызываются на каждый tool call.',
+    defaults: base({ instances: 2, maxRps: 500, latencyMs: 25, costPerHour: 0.1, azCount: 2 }),
+    fields: COMMON,
+  },
+  semcache: {
+    kind: 'semcache', title: 'Semantic cache', short: 'SemCache', category: 'AI', color: '#fb7185', edgeMode: 'route',
+    description: 'Кэш ответов LLM по смысловой близости запроса (эмбеддинг + поиск). Попадание экономит полный вызов LLM. Промахи уходят дальше.',
+    defaults: base({ instances: 2, maxRps: 3000, latencyMs: 12, ramGb: 32, costPerHour: 0.3, azCount: 2, hitRatio: 35, engine: 'Redis + vectors' }),
+    fields: ['engine', 'hitRatio', ...COMMON],
+  },
+  guardrails: {
+    kind: 'guardrails', title: 'Guardrails / Moderation', short: 'Guard', category: 'AI', color: '#facc15', edgeMode: 'route',
+    description: 'Проверка входа/выхода: jailbreak, PII, токсичность. Заблокированные запросы отклоняются (не доходят до дорогой LLM).',
+    defaults: base({ instances: 2, maxRps: 1500, latencyMs: 30, costPerHour: 0.2, azCount: 2, blockRate: 2 }),
+    fields: ['blockRate', ...COMMON],
   },
 }
 
@@ -181,6 +235,20 @@ export const FIELD_DEFS: Record<keyof Params, FieldDef> = {
   limitRps: { label: 'Лимит', unit: 'rps', type: 'number', min: 1, step: 100 },
   partitions: { label: 'Партиции', type: 'number', min: 1, max: 1000, step: 1, hint: 'Максимум параллельных консьюмеров' },
   model: { label: 'Модель', type: 'text' },
+  inTokens: { label: 'Входных токенов / запрос', type: 'number', min: 0, step: 100, hint: 'Промпт + контекст (RAG-чанки, история)' },
+  outTokens: { label: 'Выходных токенов / запрос', type: 'number', min: 1, step: 50 },
+  tokensPerSec: { label: 'Скорость генерации', unit: 'ток/с', type: 'number', min: 1, step: 5, hint: 'Decode-скорость одного потока' },
+  ttftMs: { label: 'TTFT (до 1-го токена)', unit: 'мс', type: 'number', min: 0, step: 10 },
+  costPer1MIn: { label: 'Цена 1M вход. токенов', unit: '$', type: 'number', min: 0, step: 0.05 },
+  costPer1MOut: { label: 'Цена 1M выход. токенов', unit: '$', type: 'number', min: 0, step: 0.1 },
+  tpmLimit: { label: 'TPM лимит', unit: 'ток/мин', type: 'number', min: 1000, step: 100000, hint: 'Tokens per minute на аккаунт/ключ' },
+  gpuType: { label: 'GPU', type: 'select', options: ['L4', 'A10G', 'A100-80G', 'H100', 'H200'], hint: 'Выбор GPU подставляет типичную скорость и цену' },
+  batchSize: { label: 'Batch (continuous)', type: 'number', min: 1, max: 256, step: 1, hint: 'Одновременных потоков на реплику' },
+  throughputTps: { label: 'Пропускная', unit: 'ток/с', type: 'number', min: 1, step: 1000, hint: 'Токенов в секунду на инстанс' },
+  recall: { label: 'Recall@k', unit: '%', type: 'number', min: 50, max: 100, step: 1, hint: 'Выше recall — точнее, но медленнее поиск' },
+  indexM: { label: 'Размер индекса', unit: 'млн векторов', type: 'number', min: 0.01, step: 1 },
+  steps: { label: 'Шагов на запрос', type: 'number', min: 1, max: 50, step: 1, hint: 'Каждый шаг повторяет все call-вызовы агента' },
+  blockRate: { label: 'Доля блокировок', unit: '%', type: 'number', min: 0, max: 100, step: 0.5 },
 }
 
 export function defaultEdgeData(sourceKind: Kind, targetKind?: Kind): EdgeData {

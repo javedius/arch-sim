@@ -1,3 +1,4 @@
+import { aiRecommendations, deriveGraph } from './ai'
 import { CATALOG } from './catalog'
 import { initialState, simulateTick } from './engine'
 import type { Faults, SimGraph, TickResult } from './types'
@@ -55,7 +56,7 @@ export const SCENARIOS: ScenarioDef[] = [
         if (n.kind === 'client') return
         const az = Math.max(1, n.params.azCount)
         if (az === 1) f[n.id] = { down: true }
-        else if (['dns', 'cdn', 'objectstorage', 'external'].includes(n.kind)) return // managed-сервис переживает потерю зоны
+        else if (['dns', 'cdn', 'objectstorage', 'external', 'llmapi'].includes(n.kind)) return // managed-сервис переживает потерю зоны
         else if (n.kind === 'sqldb') {
           const total = (n.params.replicas ?? 0) + 1
           f[n.id] = { lostInstances: Math.ceil(total / az) }
@@ -239,12 +240,13 @@ export function runScenario(
 
 /* ---------- рекомендации ---------- */
 
-export function recommend(graph: SimGraph, res: ScenarioResult | null, slo?: Slo): Recommendation[] {
+export function recommend(rawGraph: SimGraph, res: ScenarioResult | null, slo?: Slo, livePeaks?: NodePeak[]): Recommendation[] {
+  const graph = deriveGraph(rawGraph)
   const recs: Recommendation[] = []
   const byId = new Map(graph.nodes.map((n) => [n.id, n]))
   const inc = (id: string) => graph.edges.filter((e) => e.target === id).map((e) => byId.get(e.source)).filter(Boolean)
   const kinds = new Set(graph.nodes.map((n) => n.kind))
-  const peaks = res?.peaks ?? []
+  const peaks = res?.peaks ?? livePeaks ?? []
 
   for (const pk of peaks) {
     const n = byId.get(pk.id)
@@ -262,11 +264,13 @@ export function recommend(graph: SimGraph, res: ScenarioResult | null, slo?: Slo
             'Если упирается запись — шардирование (сейчас шардов: ' + (p.shards ?? 1) + ') или выносите запись в очередь.',
           ].filter(Boolean).join(' '),
         })
-      } else if (n.kind === 'llm') {
+      } else if (n.kind === 'llmapi') {
+        // TPM-лимит разбирается в AI-рекомендациях
+      } else if (n.kind === 'llm' || n.kind === 'gpullm') {
         const need = Math.ceil(pk.peakArrivals / (p.maxRps * 0.7))
         recs.push({
           severity: 'critical', node: n.id, title: `${name}: инференс не тянет (пик ${Math.round(pk.peakUtil * 100)}%)`,
-          detail: `Нужно ~${need} GPU-инстансов при 70% загрузке. Дешевле: семантический кэш ответов, батчинг (vLLM), модель меньше для простых запросов, стриминг, очередь для фоновых задач.`,
+          detail: `Нужно ~${need} GPU-реплик при 70% загрузке (сейчас ${p.instances}). Дешевле: семантический кэш ответов, батчинг (vLLM), модель меньше для простых запросов, стриминг, очередь для фоновых задач.`,
         })
       } else if (n.kind === 'external') {
         recs.push({
@@ -304,7 +308,7 @@ export function recommend(graph: SimGraph, res: ScenarioResult | null, slo?: Slo
 
   // структурные проверки
   for (const n of graph.nodes) {
-    if (n.kind === 'client' || ['dns', 'cdn', 'objectstorage', 'external'].includes(n.kind)) continue
+    if (n.kind === 'client' || ['dns', 'cdn', 'objectstorage', 'external', 'llmapi'].includes(n.kind)) continue
     const p = n.params
     const name = `«${n.label}»`
     const single = n.kind === 'sqldb' ? (p.replicas ?? 0) === 0 : p.instances < 2
@@ -328,7 +332,7 @@ export function recommend(graph: SimGraph, res: ScenarioResult | null, slo?: Slo
     recs.push({ severity: 'info', title: 'Нет rate limiting', detail: 'Публичный API без ограничения — всплеск или бот может положить систему. Добавьте Rate Limiter на входе (на gateway/LB).' })
   }
   const sql = graph.nodes.filter((n) => n.kind === 'sqldb' || n.kind === 'nosql')
-  if (sql.length && !kinds.has('cache')) {
+  if (sql.length && !kinds.has('cache') && !kinds.has('semcache')) {
     recs.push({ severity: 'info', title: 'Нет кэша', detail: 'Все чтения идут в базу. Redis перед БД обычно снимает 70–95% чтений и сильно снижает p99.' })
   }
   if (!kinds.has('cdn') && graph.nodes.some((n) => n.kind === 'objectstorage' || n.kind === 'webserver')) {
@@ -340,6 +344,9 @@ export function recommend(graph: SimGraph, res: ScenarioResult | null, slo?: Slo
   for (const n of graph.nodes.filter((x) => x.kind === 'external' || x.kind === 'llm')) {
     if (n.params.failureRate >= 0.5) recs.push({ severity: 'info', node: n.id, title: `«${n.label}»: нестабильная зависимость (${n.params.failureRate}% ошибок)`, detail: 'Добавьте ретраи с exponential backoff, circuit breaker и fallback (деградация функционала).' })
   }
+
+  const rawById = new Map(rawGraph.nodes.map((n) => [n.id, n]))
+  recs.push(...aiRecommendations({ nodes: graph.nodes.map((n) => ({ ...n, params: { ...rawById.get(n.id)!.params } })), edges: graph.edges }, peaks))
 
   if (res && slo) {
     const s = res.summary

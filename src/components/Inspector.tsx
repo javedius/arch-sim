@@ -1,5 +1,6 @@
 import { Copy, Power, Trash2 } from 'lucide-react'
 import { useMemo } from 'react'
+import { tokenInfo } from '../sim/ai'
 import { CATALOG, FIELD_DEFS } from '../sim/catalog'
 import { recommend } from '../sim/scenarios'
 import type { EdgeData, Params } from '../sim/types'
@@ -86,6 +87,7 @@ function NodeInspector({ id }: { id: string }) {
           <Metric label="Стоимость" value={`${fmtMoney(m.costMonth)}/мес`} />
         </div>
       )}
+      <TokenPanel kind={n.data.kind} params={p} served={m?.served ?? 0} />
       <div className="ins-section">Параметры</div>
       <div className="fields">
         {def.fields.map((k) => (
@@ -102,6 +104,27 @@ function NodeInspector({ id }: { id: string }) {
         <button onClick={() => remove(id)}><Trash2 size={14} /> Удалить</button>
       </div>
     </aside>
+  )
+}
+
+function TokenPanel({ kind, params, served }: { kind: import('../sim/types').Kind; params: Params; served: number }) {
+  const info = tokenInfo(kind, params)
+  if (!info) return null
+  const tokPerMin = info.tokensPerReq ? served * info.tokensPerReq * 60 : 0
+  return (
+    <>
+      <div className="ins-section">Расчёт по токенам</div>
+      <div className="metrics-grid token">
+        <Metric label="Время ответа" value={fmtMs(info.latencyMs)} />
+        <Metric label={kind === 'llmapi' ? 'Ёмкость (TPM)' : 'Ёмкость реплики'} value={`${fmtNum(info.maxRps)} rps`} />
+        {info.perStreamTps !== undefined && <Metric label="Скорость потока" value={`${fmtNum(info.perStreamTps)} ток/с`} />}
+        {info.tokensPerReq !== undefined && <Metric label="Токенов / запрос" value={fmtNum(info.tokensPerReq)} />}
+        {info.costPerReq > 0 && <Metric label="Цена запроса" value={`$${info.costPerReq.toFixed(5)}`} />}
+        {info.costPerReq > 0 && <Metric label="Цена 1000 запросов" value={`$${(info.costPerReq * 1000).toFixed(2)}`} />}
+        {tokPerMin > 0 && <Metric label="Токенов/мин сейчас" value={fmtNum(tokPerMin)} color={kind === 'llmapi' && params.tpmLimit && tokPerMin > params.tpmLimit * 0.85 ? '#ef4444' : undefined} />}
+        {kind === 'gpullm' && <Metric label="Цена 1M ток. (при 100%)" value={`$${((params.costPerHour / 3600) / (info.maxRps * (info.tokensPerReq || 1)) * 1e6).toFixed(2)}`} />}
+      </div>
+    </>
   )
 }
 
@@ -156,14 +179,11 @@ function Overview() {
   const setSlo = useStore((s) => s.setSlo)
   const graph = useMemo(() => useStore.getState().graph(), [nodes, edges]) // eslint-disable-line react-hooks/exhaustive-deps
   const recs = useMemo(() => {
-    const live = recommend(graph, null)
-    if (last) {
-      for (const n of graph.nodes) {
-        const m = last.nodes[n.id]
-        if (n.kind !== 'client' && m && m.status === 'hot') live.unshift({ severity: 'critical', node: n.id, title: `«${n.label}»: перегрузка ${Math.round(m.utilization * 100)}%`, detail: m.dropped > 0 ? `Теряется ${fmtNum(m.dropped)} rps. Добавьте инстансы/реплики или кэш перед узлом.` : 'Очередь запросов растёт — латентность взлетает. Добавьте мощности.' })
-      }
-    }
-    return live.slice(0, 12)
+    const peaks = last ? graph.nodes.map((n) => {
+      const m = last.nodes[n.id]
+      return { id: n.id, label: n.label, kind: n.kind, peakUtil: m?.utilization ?? 0, peakArrivals: m?.arrivals ?? 0, maxDropPct: m && m.arrivals > 0 ? (m.dropped / m.arrivals) * 100 : 0, maxBacklog: m?.backlog ?? 0, maxLagSec: Number.isFinite(m?.lagSec ?? 0) ? m?.lagSec ?? 0 : 1e9, avgUtil: m?.utilization ?? 0, capacity: m?.capacity ?? 0, instances: m?.instances ?? 0 }
+    }) : []
+    return recommend(graph, null, undefined, peaks).slice(0, 14)
   }, [graph, last])
   const g = last?.global
   const okP99 = g ? g.p99 <= slo.p99Ms : true

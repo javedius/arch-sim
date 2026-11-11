@@ -2,6 +2,7 @@ export type Kind =
   | 'client' | 'dns' | 'cdn' | 'loadbalancer' | 'gateway' | 'ratelimiter' | 'auth'
   | 'webserver' | 'microservice' | 'cache' | 'sqldb' | 'nosql' | 'queue' | 'worker'
   | 'objectstorage' | 'search' | 'external' | 'llm'
+  | 'llmapi' | 'gpullm' | 'embedding' | 'vectordb' | 'ragorch' | 'agent' | 'mcp' | 'semcache' | 'guardrails'
 
 export type Region = 'ru-moscow' | 'eu-central' | 'us-east' | 'asia-east'
 
@@ -30,6 +31,21 @@ export interface Params {
   limitRps?: number
   partitions?: number
   model?: string
+  // AI / токены
+  inTokens?: number // входных токенов на запрос
+  outTokens?: number // выходных токенов на запрос
+  tokensPerSec?: number // скорость генерации на один поток (decode)
+  ttftMs?: number // time to first token (база)
+  costPer1MIn?: number // $ за 1M входных токенов
+  costPer1MOut?: number // $ за 1M выходных токенов
+  tpmLimit?: number // лимит токенов в минуту
+  gpuType?: string
+  batchSize?: number
+  throughputTps?: number // токенов/с на инстанс (эмбеддинги)
+  recall?: number // % recall@k
+  indexM?: number // размер индекса, млн векторов
+  steps?: number // шагов агента на запрос
+  blockRate?: number // % заблокированных запросов
 }
 
 export type EdgeMode = 'route' | 'call'

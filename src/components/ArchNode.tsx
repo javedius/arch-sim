@@ -16,7 +16,7 @@ function ArchNodeImpl({ id, data, selected }: NodeProps<ArchNodeT>) {
   const util = Math.min(1, m?.utilization ?? 0)
   let badge = ''
   if (data.kind === 'sqldb') badge = `P${(p.shards ?? 1) > 1 ? '×' + p.shards : ''}${p.replicas ? ' +' + p.replicas + 'R' : ''}`
-  else if (data.kind !== 'client' && !['dns', 'cdn', 'objectstorage', 'external'].includes(data.kind)) badge = `×${m?.instances ?? p.instances}`
+  else if (data.kind !== 'client' && !['dns', 'cdn', 'objectstorage', 'external', 'llmapi'].includes(data.kind)) badge = `×${m?.instances ?? p.instances}`
   return (
     <div className={`arch-node status-${status} ${selected ? 'selected' : ''}`} style={{ ['--accent' as string]: def.color, ['--status' as string]: color }}>
       <Handle type="target" position={Position.Left} />
@@ -26,7 +26,7 @@ function ArchNodeImpl({ id, data, selected }: NodeProps<ArchNodeT>) {
         </div>
         <div className="an-title">
           <div className="an-label" title={data.label}>{data.label}</div>
-          <div className="an-kind">{def.short}{p.engine ? ` · ${p.engine}` : ''}{p.autoscale ? ' · auto' : ''}</div>
+          <div className="an-kind">{def.short}{p.engine ? ` · ${p.engine}` : ''}{data.kind === 'gpullm' ? ` · ${p.gpuType} b${p.batchSize}` : ''}{data.kind === 'agent' ? ` · ${p.steps} шаг.` : ''}{(data.kind === 'llmapi' || data.kind === 'gpullm') ? ` · ${p.inTokens}/${p.outTokens} tok` : ''}{p.autoscale ? ' · auto' : ''}</div>
         </div>
         {badge && <div className="an-badge">{badge}</div>}
       </div>

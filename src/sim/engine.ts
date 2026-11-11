@@ -1,3 +1,4 @@
+import { deriveGraph } from './ai'
 import { regionLatency } from './catalog'
 import type {
   EdgeData, Faults, GlobalMetrics, Kind, LoadInput, NodeMetrics, SimEdge, SimGraph, SimNode, SimState, TickResult,
@@ -135,12 +136,14 @@ function effInstances(n: SimNode, state: SimState): number {
 }
 
 export function simulateTick(
-  graph: SimGraph,
+  rawGraph: SimGraph,
   load: LoadInput,
   prev: SimState,
   faults: Faults = {},
   opts: SimOptions = {},
 ): TickResult {
+  // токенные компоненты: латентность/ёмкость/цена вычисляются из токенов
+  const graph = deriveGraph(rawGraph)
   const dt = opts.dt ?? 1
   const samples = opts.samples ?? 1500
   const timeoutMs = opts.timeoutMs ?? 3000
@@ -195,7 +198,7 @@ export function simulateTick(
     const { r, w } = arr.get(id)!
     const f = faults[id] ?? {}
     // упавший кэш приложение обходит (cache-aside): все чтения идут дальше, в БД
-    const bypass = n.kind === 'cache' && isDown(id)
+    const bypass = (n.kind === 'cache' || n.kind === 'semcache') && isDown(id)
     const down = !bypass && isDown(id)
     const lost = f.lostInstances ?? 0
     let instances = Math.max(0, effInstances(n, state) - lost)
@@ -236,7 +239,16 @@ export function simulateTick(
         rejectP = 1 - p.limitRps / lambda
         admitted = p.limitRps
       }
-      readPool = writePool = mmc(admitted, p.maxRps, down ? 0 : instances, timeoutMs)
+      if (n.kind === 'guardrails' && (p.blockRate ?? 0) > 0) {
+        rejectP = Math.min(1, (p.blockRate ?? 0) / 100)
+      }
+      if (n.kind === 'llmapi') {
+        // провайдер не держит очередь: сверх TPM — сразу 429
+        const cap = p.maxRps * Math.max(1, instances)
+        if (lambda > cap) rejectP = 1 - cap / lambda
+        const rho = lambda / cap
+        readPool = writePool = { c: Math.max(1, instances), mu: p.maxRps, lambda: Math.min(lambda, cap), rho, pWait: 0, meanWaitMs: 0, dropP: down ? 1 : 0 }
+      } else readPool = writePool = mmc(admitted, p.maxRps, down ? 0 : instances, timeoutMs)
     }
     if (down) {
       readPool = { ...readPool, dropP: lambda > 0 ? 1 : 0 }
@@ -244,7 +256,7 @@ export function simulateTick(
     }
     const errP = Math.min(1, Math.max(0, p.failureRate / 100))
     if (bypass) readPool = writePool = mmc(0, 1, 1, timeoutMs)
-    const hitP = bypass ? 0 : n.kind === 'cdn' || n.kind === 'cache' ? Math.min(1, Math.max(0, (p.hitRatio ?? 0) / 100)) : 0
+    const hitP = bypass ? 0 : n.kind === 'cdn' || n.kind === 'cache' || n.kind === 'semcache' ? Math.min(1, Math.max(0, (p.hitRatio ?? 0) / 100)) : 0
 
     const passR = down ? 0 : (1 - rejectP) * (1 - readPool.dropP) * (1 - errP)
     const passW = down ? 0 : (1 - rejectP) * (1 - writePool.dropP) * (1 - errP)
@@ -289,6 +301,7 @@ export function simulateTick(
     }
 
     const sync = edges.filter((e) => !e.data.async)
+    const stepMul = n.kind === 'agent' ? Math.max(1, p.steps ?? 1) : 1
     const distribute = (amount: number, type: 'r' | 'w') => {
       const eligible = sync.filter((e) => allows(e.data, type))
       const routes = eligible.filter((e) => e.data.mode === 'route')
@@ -316,7 +329,7 @@ export function simulateTick(
         })
       }
       calls.forEach((e) => {
-        const amt = amount * Math.max(0, e.data.weight)
+        const amt = amount * Math.max(0, e.data.weight) * stepMul
         edgeFlow[e.id] += amt
         const a = arr.get(e.target)!
         if (type === 'r') a.r += amt
@@ -384,7 +397,8 @@ export function simulateTick(
     if (!rt) return { ms: 0, res: 'error' }
     const n = rt.node
     if (rt.down) return { ms: Math.min(timeoutMs, 30), res: 'error' }
-    if (rt.rejectP > 0 && rand() < rt.rejectP) return { ms: n.params.latencyMs, res: 'rejected' }
+    // 429 от LLM-провайдера ломает запрос пользователя (ошибка), а rate limiter/guardrails — штатный отказ
+    if (rt.rejectP > 0 && rand() < rt.rejectP) return { ms: n.params.latencyMs, res: n.kind === 'llmapi' ? 'error' : 'rejected' }
     const pool = type === 'r' ? rt.readPool : rt.writePool
     if (pool.dropP > 0 && rand() < pool.dropP) return { ms: timeoutMs, res: 'error' }
     let ms = rt.bypass ? 2 : n.params.latencyMs * lognorm()
@@ -411,17 +425,20 @@ export function simulateTick(
       ms += o.ms
       if (o.res !== 'ok') return { ms, res: o.res }
     }
-    for (const e of edges) {
-      if (e.data.mode !== 'call') continue
-      const wgt = Math.max(0, e.data.weight)
-      const calls = Math.floor(wgt) + (rand() < wgt - Math.floor(wgt) ? 1 : 0)
-      for (let i = 0; i < calls; i++) {
-        const o = hop(e)
-        ms += o.ms
-        if (o.res !== 'ok') return { ms, res: o.res }
+    const steps = n.kind === 'agent' ? Math.max(1, Math.round(n.params.steps ?? 1)) : 1
+    for (let s = 0; s < steps; s++) {
+      for (const e of edges) {
+        if (e.data.mode !== 'call') continue
+        const wgt = Math.max(0, e.data.weight)
+        const calls = Math.floor(wgt) + (rand() < wgt - Math.floor(wgt) ? 1 : 0)
+        for (let i = 0; i < calls; i++) {
+          const o = hop(e)
+          ms += o.ms
+          if (o.res !== 'ok') return { ms, res: o.res }
+        }
       }
     }
-    return { ms: Math.min(ms, timeoutMs * 3), res: 'ok' }
+    return { ms, res: 'ok' }
   }
 
   const lat: number[] = []
